@@ -1,3 +1,4 @@
+```js
 import express from 'express';
 import dotenv from 'dotenv';
 import crypto from 'node:crypto';
@@ -235,11 +236,14 @@ function escapeHtml(value) {
   return String(value).replace(/[&<>'"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[c]));
 }
 
-const server = app.listen(PORT, () => {
-  console.log(`Attendance Tracker running at http://localhost:${PORT}`);
+// ONLY CHANGE: explicitly bind to 0.0.0.0 for Render
+const server = app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Attendance Tracker running on port ${PORT}`);
 });
+
 server.on('error', err => {
   if (err.code === 'EADDRINUSE') console.error(`\nPort ${PORT} is already in use. Close the other app or change PORT in .env.\n`);
   else console.error(err);
   process.exit(1);
 });
+```
