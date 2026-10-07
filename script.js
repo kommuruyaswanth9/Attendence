@@ -1,8 +1,4 @@
-// ---------------- SECURE LOGIN / REAL EMAIL OTP ----------------
-// GitHub Pages only hosts static files (no server, so no email OTP).
-// On *.github.io the app uses a simple local sign-in instead; on a Node host (Render etc.) it uses the OTP.
-const STATIC_MODE = location.hostname.endsWith("github.io");
-const LOCAL_USER_KEY = "attendanceLocalUser";
+// ---------------- SECURE LOGIN / SMS OTP ----------------
 const OTP_TTL = 60 * 1000;
 let challengeId = "";
 let otpExpiresAt = 0;
@@ -14,7 +10,7 @@ const studentForm = document.getElementById("studentForm");
 const otpPanel = document.getElementById("otpPanel");
 const studentNameInput = document.getElementById("studentName");
 const rollNumberInput = document.getElementById("rollNumber");
-const phoneNumberInput = document.getElementById("phoneNumber");
+const mobileInput = document.getElementById("mobileNumber");
 const otpInput = document.getElementById("otpInput");
 const otpTimer = document.getElementById("otpTimer");
 const loginMessage = document.getElementById("loginMessage");
@@ -49,23 +45,27 @@ function startOtpTimer(expiresIn=60){
 async function requestOtp(){
   const name=studentNameInput.value.trim();
   const roll=rollNumberInput.value.trim();
-  const phone=phoneNumberInput.value.trim();
-  if(!name || !roll || !phone){
-    setLoginMessage("Enter your name, roll number and mobile number first.","error");
+  const mobile=mobileInput.value.replace(/\D/g,"");
+  if(!name || !roll){
+    setLoginMessage("Enter your name and roll number first.","error");
+    return;
+  }
+  if(!/^[6-9]\d{9}$/.test(mobile)){
+    setLoginMessage("Enter a valid 10-digit mobile number.","error");
     return;
   }
 
   const button=document.querySelector("#studentForm .login-primary");
   button.disabled=true;
   resendButton.disabled=true;
-  setLoginMessage("Sending your OTP by SMS...","");
+  setLoginMessage("Sending the OTP to your mobile number...","");
 
   try{
     const response=await fetch("/api/send-otp",{
       method:"POST",
       headers:{"Content-Type":"application/json"},
       credentials:"same-origin",
-      body:JSON.stringify({name,rollNumber:roll,phone})
+      body:JSON.stringify({name,rollNumber:roll,mobile})
     });
     const result=await response.json().catch(()=>({}));
     if(!response.ok) throw new Error(result.error || "Could not send OTP.");
@@ -74,10 +74,10 @@ async function requestOtp(){
     otpPanel.hidden=false;
     otpInput.value="";
     startOtpTimer(result.expiresIn || 60);
-    setLoginMessage(result.message || "OTP sent by SMS.","success");
+    setLoginMessage(result.message || "OTP sent to your mobile number.","success");
     otpInput.focus();
   }catch(error){
-    setLoginMessage(error.message || "Could not send OTP. Check the server and Resend settings.","error");
+    setLoginMessage(error.message || "Could not send OTP. Check the server and SMS settings.","error");
   }finally{
     button.disabled=false;
     setTimeout(()=>{resendButton.disabled=false;},30000);
@@ -91,7 +91,7 @@ async function verifyOtpWithServer(){
   }
   const otp=otpInput.value.trim();
   if(!/^\d{6}$/.test(otp)){
-    setLoginMessage("Enter the 6-digit OTP sent to your mobile.","error");
+    setLoginMessage("Enter the 6-digit OTP from the SMS.","error");
     return;
   }
   if(Date.now()>otpExpiresAt){
@@ -152,18 +152,19 @@ async function restoreServerSession(){
 }
 
 document.getElementById("logoutBtn").onclick=async()=>{
-  if(STATIC_MODE){ try{localStorage.removeItem(LOCAL_USER_KEY);}catch(e){} }
-  else { try{await fetch("/api/logout",{method:"POST",credentials:"same-origin"});}catch(e){} }
+  try{await fetch("/api/logout",{method:"POST",credentials:"same-origin"});}catch(e){}
   location.reload();
 };
 
 studentForm.addEventListener("submit",e=>{
   e.preventDefault();
-  if(STATIC_MODE){ localLogin(); return; }
   requestOtp();
 });
 verifyButton.onclick=verifyOtpWithServer;
 resendButton.onclick=requestOtp;
+mobileInput.addEventListener("input",()=>{
+  mobileInput.value=mobileInput.value.replace(/\D/g,"").slice(0,10);
+});
 otpInput.addEventListener("input",()=>{
   otpInput.value=otpInput.value.replace(/\D/g,"").slice(0,6);
 });
@@ -171,36 +172,7 @@ otpInput.addEventListener("keydown",e=>{
   if(e.key==="Enter") verifyOtpWithServer();
 });
 
-function localLogin(){
-  const name=studentNameInput.value.trim();
-  const roll=rollNumberInput.value.trim();
-  if(name.length<2 || !roll){
-    otpPanel.hidden=false;
-    document.querySelector(".otp-heading").hidden=true;
-    document.querySelector("#otpPanel > p").hidden=true;
-    otpInput.hidden=verifyButton.hidden=resendButton.hidden=true;
-    setLoginMessage("Enter a valid name and roll number.","error");
-    return;
-  }
-  try{localStorage.setItem(LOCAL_USER_KEY,JSON.stringify({name,rollNumber:roll}));}catch(e){}
-  showLoggedInUser(name,roll);
-}
-
-function restoreLocalSession(){
-  try{
-    const u=JSON.parse(localStorage.getItem(LOCAL_USER_KEY)||"null");
-    if(u && u.name && u.rollNumber){ showLoggedInUser(u.name,u.rollNumber); return true; }
-  }catch(e){}
-  return false;
-}
-
 (async()=>{
-  if(STATIC_MODE){
-    document.querySelector("#studentForm .login-primary").textContent="Continue";
-    document.querySelector(".login-note").textContent="Your attendance is saved in this browser only.";
-    if(!restoreLocalSession()) attendanceApp.hidden=true;
-    return;
-  }
   const loggedIn=await restoreServerSession();
   if(!loggedIn) attendanceApp.hidden=true;
 })();

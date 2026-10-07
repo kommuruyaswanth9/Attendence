@@ -1,0 +1,15 @@
+# Email (Resend) - used to notify the admin Gmail after a student verifies
+RESEND_API_KEY=re_your_private_key_here
+RESEND_FROM=Attendance Tracker <onboarding@resend.dev>
+OTP_EMAIL=your_admin_gmail@gmail.com
+
+# SMS (Twilio) - OTP is sent to the student's own mobile number
+TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+TWILIO_AUTH_TOKEN=your_twilio_auth_token
+TWILIO_FROM=+10000000000
+# Optional: use a Messaging Service instead of TWILIO_FROM
+# TWILIO_MESSAGING_SERVICE_SID=MGxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+SMS_COUNTRY_CODE=+91
+
+SESSION_SECRET=replace_with_a_long_random_secret
+PORT=3000

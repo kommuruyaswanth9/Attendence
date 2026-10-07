@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Resend } from 'resend';
 
 dotenv.config();
 
@@ -16,8 +17,19 @@ const RESEND_FROM = process.env.RESEND_FROM || 'Attendance Tracker <onboarding@r
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const SESSION_SECRET = process.env.SESSION_SECRET;
 
+// SMS provider (Twilio). Swap sendSms() below if you use MSG91 / Fast2SMS etc.
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
+const TWILIO_FROM = process.env.TWILIO_FROM; // your Twilio phone number, e.g. +1415...
+const TWILIO_MESSAGING_SERVICE_SID = process.env.TWILIO_MESSAGING_SERVICE_SID; // optional alternative to TWILIO_FROM
+const SMS_COUNTRY_CODE = process.env.SMS_COUNTRY_CODE || '+91';
+const SMS_READY = Boolean(TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN && (TWILIO_FROM || TWILIO_MESSAGING_SERVICE_SID));
+
 if (!RESEND_API_KEY || !SESSION_SECRET || !OTP_EMAIL) {
   console.warn('\nMissing RESEND_API_KEY, SESSION_SECRET or OTP_EMAIL. Create a .env file before using OTP login.\n');
+}
+if (!SMS_READY) {
+  console.warn('\nMissing Twilio settings (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and TWILIO_FROM or TWILIO_MESSAGING_SERVICE_SID). OTP SMS cannot be sent.\n');
 }
 if (SESSION_SECRET && SESSION_SECRET.length < 32) {
   console.warn('\nSESSION_SECRET is short. Use a random 64-character value (see README).\n');
@@ -27,6 +39,7 @@ const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
 const challenges = new Map();
 const sessions = new Map();
 const requestCooldown = new Map();
+const mobileLimits = new Map(); // per-mobile SMS limits so nobody can spam someone else's phone
 
 app.disable('x-powered-by');
 app.set('trust proxy', 1); // correct client IP + secure cookies behind Render/Railway/Nginx etc.
@@ -41,6 +54,10 @@ app.get(Object.keys(PUBLIC_FILES), (req, res) => {
 
 function cleanText(value, max) {
   return String(value ?? '').trim().replace(/[<>]/g, '').slice(0, max);
+}
+
+function hashOtp(otp) {
+  return crypto.createHash('sha256').update(otp).digest('hex');
 }
 
 function newToken(bytes = 32) {
@@ -96,73 +113,129 @@ function cleanup() {
   for (const [id, c] of challenges) if (c.expiresAt < now) challenges.delete(id);
   for (const [id, s] of sessions) if (s.expiresAt < now) sessions.delete(id);
   for (const [ip, t] of requestCooldown) if (t < now) requestCooldown.delete(ip);
+  for (const [m, v] of mobileLimits) if (now - v.windowStart > 3_600_000) mobileLimits.delete(m);
 }
 setInterval(cleanup, 30_000).unref();
 
-app.post('/api/send-otp', async (req, res) => {
-  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_VERIFY_SERVICE_SID || !SESSION_SECRET) {
-    return res.status(500).json({ error: 'Mobile OTP is not configured on the server. Add the Twilio Verify variables and SESSION_SECRET in Render.' });
+// ---- Mobile / SMS helpers ----
+function normalizeMobile(value) {
+  let digits = String(value ?? '').replace(/\D/g, '');
+  if (digits.length === 12 && digits.startsWith('91')) digits = digits.slice(2);
+  if (digits.length === 11 && digits.startsWith('0')) digits = digits.slice(1);
+  return /^[6-9]\d{9}$/.test(digits) ? digits : '';
+}
+
+function maskMobile(mobile) {
+  return `${mobile.slice(0, 2)}******${mobile.slice(-2)}`;
+}
+
+async function sendSms(to, body) {
+  const params = new URLSearchParams({ To: to, Body: body });
+  if (TWILIO_MESSAGING_SERVICE_SID) params.set('MessagingServiceSid', TWILIO_MESSAGING_SERVICE_SID);
+  else params.set('From', TWILIO_FROM);
+
+  const response = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`, {
+    method: 'POST',
+    headers: {
+      Authorization: 'Basic ' + Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString('base64'),
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: params
+  });
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}));
+    throw new Error(detail.message || `SMS provider returned ${response.status}`);
   }
+}
+
+// Emails the admin Gmail AFTER a student has verified their OTP. Never blocks login.
+async function notifyAdmin(name, rollNumber, mobile) {
+  if (!resend || !OTP_EMAIL) return;
+  const time = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
+  try {
+    const { error } = await resend.emails.send({
+      from: RESEND_FROM,
+      to: [OTP_EMAIL],
+      subject: `New Attendance Registration - ${name} - Roll ${rollNumber}`,
+      html: `
+        <div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:28px;color:#172033;background:#ffffff">
+          <h2 style="margin:0 0 18px;color:#111827">New Attendance Registration</h2>
+          <div style="border:1px solid #e5e7eb;border-radius:12px;padding:18px;background:#f9fafb">
+            <p style="margin:0 0 10px"><strong>Name:</strong> ${escapeHtml(name)}</p>
+            <p style="margin:0 0 10px"><strong>Roll Number:</strong> ${escapeHtml(rollNumber)}</p>
+            <p style="margin:0 0 10px"><strong>Mobile:</strong> ${escapeHtml(mobile)}</p>
+            <p style="margin:0"><strong>Time:</strong> ${escapeHtml(time)} (IST)</p>
+          </div>
+        </div>`
+    });
+    if (error) console.error('Admin notification failed:', error.message || error);
+  } catch (err) {
+    console.error('Admin notification error:', err);
+  }
+}
+
+app.post('/api/send-otp', async (req, res) => {
+  if (!SMS_READY || !resend || !SESSION_SECRET || !OTP_EMAIL) return res.status(500).json({ error: 'Server is not configured. Check the SMS (Twilio), Resend and SESSION_SECRET settings in .env and restart.' });
 
   const ip = req.ip || 'unknown';
+  const now = Date.now();
   const lastRequest = requestCooldown.get(ip) || 0;
-  if (Date.now() - lastRequest < 30_000) {
+  if (now - lastRequest < 30_000) {
     return res.status(429).json({ error: 'Please wait 30 seconds before requesting another OTP.' });
   }
 
   const name = cleanText(req.body?.name, 80);
   const rollNumber = cleanText(req.body?.rollNumber, 40);
-  const phone = cleanText(req.body?.phone, 20).replace(/[\s()-]/g, '');
+  const mobile = normalizeMobile(req.body?.mobile);
   if (name.length < 2 || rollNumber.length < 1) {
     return res.status(400).json({ error: 'Enter a valid name and roll number.' });
   }
-  if (!/^\+[1-9]\d{7,14}$/.test(phone)) {
-    return res.status(400).json({ error: 'Enter a valid mobile number with country code, for example +919876543210.' });
+  if (!mobile) {
+    return res.status(400).json({ error: 'Enter a valid 10-digit mobile number.' });
   }
 
+  // Per-mobile limits: 1 SMS / 30 s and 5 SMS / hour
+  const limit = mobileLimits.get(mobile) || { count: 0, windowStart: now, last: 0 };
+  if (now - limit.windowStart > 3_600_000) { limit.count = 0; limit.windowStart = now; }
+  if (now - limit.last < 30_000) {
+    return res.status(429).json({ error: 'An OTP was just sent to this number. Please wait 30 seconds.' });
+  }
+  if (limit.count >= 5) {
+    return res.status(429).json({ error: 'Too many OTP requests for this number. Try again in an hour.' });
+  }
+
+  const otp = String(crypto.randomInt(100000, 1000000));
   const challengeId = newToken(24);
-  challenges.set(challengeId, { name, rollNumber, phone, expiresAt: Date.now() + 60_000, attempts: 0 });
-  requestCooldown.set(ip, Date.now());
+  challenges.set(challengeId, {
+    otpHash: hashOtp(otp),
+    name,
+    rollNumber,
+    mobile,
+    expiresAt: now + 60_000,
+    attempts: 0
+  });
+  requestCooldown.set(ip, now);
 
   try {
-    const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString('base64');
-    const response = await fetch(
-      `https://verify.twilio.com/v2/Services/${encodeURIComponent(TWILIO_VERIFY_SERVICE_SID)}/Verifications`,
-      {
-        method: 'POST',
-        headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ To: phone, Channel: 'sms' })
-      }
-    );
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok || result.status !== 'pending') {
-      challenges.delete(challengeId);
-      requestCooldown.delete(ip);
-      console.error('Twilio Verify send error:', result);
-      return res.status(502).json({ error: result.message || 'Unable to send the OTP SMS. Check your Twilio Verify configuration.' });
-    }
-    return res.json({
-      success: true,
-      challengeId,
-      expiresIn: 60,
-      message: `OTP sent by SMS to ${phone.slice(0, 3)}******${phone.slice(-2)}.`
-    });
+    await sendSms(`${SMS_COUNTRY_CODE}${mobile}`, `${otp} is your Attendance Tracker verification code. It is valid for 1 minute. Do not share it with anyone.`);
+    limit.count += 1;
+    limit.last = now;
+    mobileLimits.set(mobile, limit);
+    const masked = maskMobile(mobile);
+    return res.json({ success: true, challengeId, expiresIn: 60, maskedMobile: masked, message: `OTP sent to ${masked}.` });
   } catch (err) {
     challenges.delete(challengeId);
     requestCooldown.delete(ip);
-    console.error('Twilio Verify send error:', err);
-    return res.status(502).json({ error: 'Unable to send the OTP SMS. Check your Twilio Verify configuration.' });
+    console.error('SMS error:', err.message);
+    return res.status(502).json({ error: 'Unable to send the OTP SMS. Check the mobile number and your SMS provider settings.' });
   }
 });
 
-app.post('/api/verify-otp', async (req, res) => {
-  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_VERIFY_SERVICE_SID || !SESSION_SECRET) {
-    return res.status(500).json({ error: 'Mobile OTP is not configured on the server.' });
-  }
-
+app.post('/api/verify-otp', (req, res) => {
   const challengeId = cleanText(req.body?.challengeId, 100);
   const otp = cleanText(req.body?.otp, 6);
   const challenge = challenges.get(challengeId);
+
   if (!challenge) return res.status(400).json({ error: 'OTP request not found. Request a new OTP.' });
   if (challenge.expiresAt < Date.now()) {
     challenges.delete(challengeId);
@@ -176,40 +249,26 @@ app.post('/api/verify-otp', async (req, res) => {
     return res.status(429).json({ error: 'Too many incorrect attempts. Request a new OTP.' });
   }
 
-  try {
-    const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString('base64');
-    const response = await fetch(
-      `https://verify.twilio.com/v2/Services/${encodeURIComponent(TWILIO_VERIFY_SERVICE_SID)}/VerificationCheck`,
-      {
-        method: 'POST',
-        headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ To: challenge.phone, Code: otp })
-      }
-    );
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      console.error('Twilio Verify check error:', result);
-      return res.status(502).json({ error: result.message || 'OTP verification service is unavailable. Please try again.' });
-    }
-    if (result.status !== 'approved') {
-      return res.status(401).json({ error: `Incorrect OTP. ${Math.max(0, 5 - challenge.attempts)} attempts remaining.` });
-    }
-
-    challenges.delete(challengeId);
-    const sessionId = newToken(32);
-    sessions.set(sessionId, {
-      name: challenge.name,
-      rollNumber: challenge.rollNumber,
-      phone: challenge.phone,
-      expiresAt: Date.now() + 24 * 60 * 60 * 1000
-    });
-    setSessionCookie(res, signSession(sessionId));
-    return res.json({ success: true, user: { name: challenge.name, rollNumber: challenge.rollNumber, phone: challenge.phone } });
-  } catch (err) {
-    console.error('Twilio Verify check error:', err);
-    return res.status(502).json({ error: 'OTP verification service is unavailable. Please try again.' });
+  const supplied = Buffer.from(hashOtp(otp));
+  const expected = Buffer.from(challenge.otpHash);
+  if (!crypto.timingSafeEqual(supplied, expected)) {
+    return res.status(401).json({ error: `Incorrect OTP. ${5 - challenge.attempts} attempts remaining.` });
   }
+
+  challenges.delete(challengeId);
+  const sessionId = newToken(32);
+  sessions.set(sessionId, {
+    name: challenge.name,
+    rollNumber: challenge.rollNumber,
+    mobile: challenge.mobile,
+    expiresAt: Date.now() + 24 * 60 * 60 * 1000
+  });
+  setSessionCookie(res, signSession(sessionId));
+  notifyAdmin(challenge.name, challenge.rollNumber, challenge.mobile); // fire-and-forget: emails the admin Gmail
+
+  return res.json({ success: true, user: { name: challenge.name, rollNumber: challenge.rollNumber } });
 });
+
 app.get('/api/session', (req, res) => {
   const user = authenticatedUser(req);
   if (!user) return res.status(401).json({ authenticated: false });
