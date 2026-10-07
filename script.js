@@ -14,6 +14,7 @@ const studentForm = document.getElementById("studentForm");
 const otpPanel = document.getElementById("otpPanel");
 const studentNameInput = document.getElementById("studentName");
 const rollNumberInput = document.getElementById("rollNumber");
+const phoneNumberInput = document.getElementById("phoneNumber");
 const otpInput = document.getElementById("otpInput");
 const otpTimer = document.getElementById("otpTimer");
 const loginMessage = document.getElementById("loginMessage");
@@ -48,22 +49,23 @@ function startOtpTimer(expiresIn=60){
 async function requestOtp(){
   const name=studentNameInput.value.trim();
   const roll=rollNumberInput.value.trim();
-  if(!name || !roll){
-    setLoginMessage("Enter your name and roll number first.","error");
+  const phone=phoneNumberInput.value.trim();
+  if(!name || !roll || !phone){
+    setLoginMessage("Enter your name, roll number and mobile number first.","error");
     return;
   }
 
   const button=document.querySelector("#studentForm .login-primary");
   button.disabled=true;
   resendButton.disabled=true;
-  setLoginMessage("Sending your name, roll number and OTP to your Gmail...","");
+  setLoginMessage("Sending your OTP by SMS...","");
 
   try{
     const response=await fetch("/api/send-otp",{
       method:"POST",
       headers:{"Content-Type":"application/json"},
       credentials:"same-origin",
-      body:JSON.stringify({name,rollNumber:roll})
+      body:JSON.stringify({name,rollNumber:roll,phone})
     });
     const result=await response.json().catch(()=>({}));
     if(!response.ok) throw new Error(result.error || "Could not send OTP.");
@@ -72,7 +74,7 @@ async function requestOtp(){
     otpPanel.hidden=false;
     otpInput.value="";
     startOtpTimer(result.expiresIn || 60);
-    setLoginMessage(result.message || "Name, roll number and OTP sent to your Gmail.","success");
+    setLoginMessage(result.message || "OTP sent by SMS.","success");
     otpInput.focus();
   }catch(error){
     setLoginMessage(error.message || "Could not send OTP. Check the server and Resend settings.","error");
@@ -89,7 +91,7 @@ async function verifyOtpWithServer(){
   }
   const otp=otpInput.value.trim();
   if(!/^\d{6}$/.test(otp)){
-    setLoginMessage("Enter the 6-digit OTP from your email.","error");
+    setLoginMessage("Enter the 6-digit OTP sent to your mobile.","error");
     return;
   }
   if(Date.now()>otpExpiresAt){
