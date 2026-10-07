@@ -3,7 +3,6 @@ import dotenv from 'dotenv';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Resend } from 'resend';
 
 dotenv.config();
 
@@ -42,10 +41,6 @@ app.get(Object.keys(PUBLIC_FILES), (req, res) => {
 
 function cleanText(value, max) {
   return String(value ?? '').trim().replace(/[<>]/g, '').slice(0, max);
-}
-
-function hashOtp(otp) {
-  return crypto.createHash('sha256').update(otp).digest('hex');
 }
 
 function newToken(bytes = 32) {
@@ -105,7 +100,9 @@ function cleanup() {
 setInterval(cleanup, 30_000).unref();
 
 app.post('/api/send-otp', async (req, res) => {
-  if (!resend || !SESSION_SECRET || !OTP_EMAIL) return res.status(500).json({ error: 'Server is not configured. Add RESEND_API_KEY, SESSION_SECRET and OTP_EMAIL to .env and restart.' });
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_VERIFY_SERVICE_SID || !SESSION_SECRET) {
+    return res.status(500).json({ error: 'Mobile OTP is not configured on the server. Add the Twilio Verify variables and SESSION_SECRET in Render.' });
+  }
 
   const ip = req.ip || 'unknown';
   const lastRequest = requestCooldown.get(ip) || 0;
@@ -115,64 +112,57 @@ app.post('/api/send-otp', async (req, res) => {
 
   const name = cleanText(req.body?.name, 80);
   const rollNumber = cleanText(req.body?.rollNumber, 40);
+  const phone = cleanText(req.body?.phone, 20).replace(/[\s()-]/g, '');
   if (name.length < 2 || rollNumber.length < 1) {
     return res.status(400).json({ error: 'Enter a valid name and roll number.' });
   }
+  if (!/^\+[1-9]\d{7,14}$/.test(phone)) {
+    return res.status(400).json({ error: 'Enter a valid mobile number with country code, for example +919876543210.' });
+  }
 
-  const otp = String(crypto.randomInt(100000, 1000000));
   const challengeId = newToken(24);
-  challenges.set(challengeId, {
-    otpHash: hashOtp(otp),
-    name,
-    rollNumber,
-    expiresAt: Date.now() + 60_000,
-    attempts: 0
-  });
+  challenges.set(challengeId, { name, rollNumber, phone, expiresAt: Date.now() + 60_000, attempts: 0 });
   requestCooldown.set(ip, Date.now());
 
   try {
-    const { error } = await resend.emails.send({
-      from: RESEND_FROM,
-      to: [OTP_EMAIL],
-      subject: `Attendance Tracker Login - ${name} - Roll ${rollNumber}`,
-      html: `
-        <div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:28px;color:#172033;background:#ffffff">
-          <h2 style="margin:0 0 18px;color:#111827">Attendance Tracker</h2>
-          <p style="margin:0 0 18px">A login verification request was received.</p>
-
-          <div style="border:1px solid #e5e7eb;border-radius:12px;padding:18px;margin:0 0 20px;background:#f9fafb">
-            <p style="margin:0 0 10px"><strong>Student Name:</strong> ${escapeHtml(name)}</p>
-            <p style="margin:0"><strong>Roll Number:</strong> ${escapeHtml(rollNumber)}</p>
-          </div>
-
-          <p style="margin:0 0 8px">Your 6-digit verification OTP is:</p>
-          <div style="font-size:34px;font-weight:800;letter-spacing:8px;padding:16px 0;color:#059669">${otp}</div>
-
-          <p style="color:#667085;margin:12px 0 0">This OTP is valid for <strong>1 minute</strong>.</p>
-          <p style="color:#667085;margin:8px 0 0">If you did not request this login, you can ignore this email.</p>
-        </div>`
-    });
-
-    if (error) {
+    const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString('base64');
+    const response = await fetch(
+      `https://verify.twilio.com/v2/Services/${encodeURIComponent(TWILIO_VERIFY_SERVICE_SID)}/Verifications`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ To: phone, Channel: 'sms' })
+      }
+    );
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result.status !== 'pending') {
       challenges.delete(challengeId);
       requestCooldown.delete(ip);
-      return res.status(502).json({ error: error.message || 'Resend could not send the OTP email.' });
+      console.error('Twilio Verify send error:', result);
+      return res.status(502).json({ error: result.message || 'Unable to send the OTP SMS. Check your Twilio Verify configuration.' });
     }
-
-    return res.json({ success: true, challengeId, expiresIn: 60, message: 'OTP sent.' });
+    return res.json({
+      success: true,
+      challengeId,
+      expiresIn: 60,
+      message: `OTP sent by SMS to ${phone.slice(0, 3)}******${phone.slice(-2)}.`
+    });
   } catch (err) {
     challenges.delete(challengeId);
     requestCooldown.delete(ip);
-    console.error('Resend error:', err);
-    return res.status(502).json({ error: 'Unable to send the OTP email. Check your Resend sender/API configuration.' });
+    console.error('Twilio Verify send error:', err);
+    return res.status(502).json({ error: 'Unable to send the OTP SMS. Check your Twilio Verify configuration.' });
   }
 });
 
-app.post('/api/verify-otp', (req, res) => {
+app.post('/api/verify-otp', async (req, res) => {
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_VERIFY_SERVICE_SID || !SESSION_SECRET) {
+    return res.status(500).json({ error: 'Mobile OTP is not configured on the server.' });
+  }
+
   const challengeId = cleanText(req.body?.challengeId, 100);
   const otp = cleanText(req.body?.otp, 6);
   const challenge = challenges.get(challengeId);
-
   if (!challenge) return res.status(400).json({ error: 'OTP request not found. Request a new OTP.' });
   if (challenge.expiresAt < Date.now()) {
     challenges.delete(challengeId);
@@ -186,24 +176,40 @@ app.post('/api/verify-otp', (req, res) => {
     return res.status(429).json({ error: 'Too many incorrect attempts. Request a new OTP.' });
   }
 
-  const supplied = Buffer.from(hashOtp(otp));
-  const expected = Buffer.from(challenge.otpHash);
-  if (!crypto.timingSafeEqual(supplied, expected)) {
-    return res.status(401).json({ error: `Incorrect OTP. ${5 - challenge.attempts} attempts remaining.` });
+  try {
+    const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString('base64');
+    const response = await fetch(
+      `https://verify.twilio.com/v2/Services/${encodeURIComponent(TWILIO_VERIFY_SERVICE_SID)}/VerificationCheck`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ To: challenge.phone, Code: otp })
+      }
+    );
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      console.error('Twilio Verify check error:', result);
+      return res.status(502).json({ error: result.message || 'OTP verification service is unavailable. Please try again.' });
+    }
+    if (result.status !== 'approved') {
+      return res.status(401).json({ error: `Incorrect OTP. ${Math.max(0, 5 - challenge.attempts)} attempts remaining.` });
+    }
+
+    challenges.delete(challengeId);
+    const sessionId = newToken(32);
+    sessions.set(sessionId, {
+      name: challenge.name,
+      rollNumber: challenge.rollNumber,
+      phone: challenge.phone,
+      expiresAt: Date.now() + 24 * 60 * 60 * 1000
+    });
+    setSessionCookie(res, signSession(sessionId));
+    return res.json({ success: true, user: { name: challenge.name, rollNumber: challenge.rollNumber, phone: challenge.phone } });
+  } catch (err) {
+    console.error('Twilio Verify check error:', err);
+    return res.status(502).json({ error: 'OTP verification service is unavailable. Please try again.' });
   }
-
-  challenges.delete(challengeId);
-  const sessionId = newToken(32);
-  sessions.set(sessionId, {
-    name: challenge.name,
-    rollNumber: challenge.rollNumber,
-    expiresAt: Date.now() + 24 * 60 * 60 * 1000
-  });
-  setSessionCookie(res, signSession(sessionId));
-
-  return res.json({ success: true, user: { name: challenge.name, rollNumber: challenge.rollNumber } });
 });
-
 app.get('/api/session', (req, res) => {
   const user = authenticatedUser(req);
   if (!user) return res.status(401).json({ authenticated: false });
