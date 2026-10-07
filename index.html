@@ -13,7 +13,7 @@
       <div class="login-icon">✓</div>
       <div class="eyebrow">SECURE STUDENT ACCESS</div>
       <h1>Attendance Tracker</h1>
-      <p class="login-subtitle">Enter your name and roll number to access your attendance.</p>
+      <p class="login-subtitle">Enter your name, roll number and mobile number to access your attendance.</p>
 
       <form id="studentForm" class="login-form">
         <label>
@@ -24,19 +24,23 @@
           <span>Roll Number</span>
           <input id="rollNumber" type="text" placeholder="Enter your roll number" autocomplete="off" required>
         </label>
+        <label>
+          <span>Mobile Number</span>
+          <input id="phoneNumber" type="tel" placeholder="+91 9876543210" autocomplete="tel" inputmode="tel" required>
+        </label>
         <button type="submit" class="login-primary">Continue &amp; Get OTP</button>
       </form>
 
       <div class="otp-panel" id="otpPanel" hidden>
         <div class="otp-heading">OTP Verification</div>
-        <p>Enter the 6-digit OTP sent to your registered email. It expires in <strong id="otpTimer">01:00</strong>.</p>
+        <p>Enter the 6-digit OTP sent to your mobile number. It expires in <strong id="otpTimer">01:00</strong>.</p>
         <input id="otpInput" class="otp-input" type="text" inputmode="numeric" maxlength="6" placeholder="Enter OTP" autocomplete="one-time-code">
         <button type="button" class="login-primary" id="verifyOtp">Verify OTP</button>
         <button type="button" class="otp-resend" id="resendOtp">Resend OTP</button>
         <div class="login-message" id="loginMessage"></div>
       </div>
 
-      <p class="login-note">A verification OTP is sent to your registered email and is valid for 1 minute.</p>
+      <p class="login-note">A verification OTP is sent by SMS and is valid for 1 minute.</p>
     </div>
   </section>
 
