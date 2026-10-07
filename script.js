@@ -1,4 +1,4 @@
-// ---------------- SECURE LOGIN / SMS OTP ----------------
+// ---------------- SECURE LOGIN / REAL EMAIL OTP ----------------
 const OTP_TTL = 60 * 1000;
 let challengeId = "";
 let otpExpiresAt = 0;
@@ -10,7 +10,6 @@ const studentForm = document.getElementById("studentForm");
 const otpPanel = document.getElementById("otpPanel");
 const studentNameInput = document.getElementById("studentName");
 const rollNumberInput = document.getElementById("rollNumber");
-const mobileInput = document.getElementById("mobileNumber");
 const otpInput = document.getElementById("otpInput");
 const otpTimer = document.getElementById("otpTimer");
 const loginMessage = document.getElementById("loginMessage");
@@ -45,27 +44,22 @@ function startOtpTimer(expiresIn=60){
 async function requestOtp(){
   const name=studentNameInput.value.trim();
   const roll=rollNumberInput.value.trim();
-  const mobile=mobileInput.value.replace(/\D/g,"");
   if(!name || !roll){
     setLoginMessage("Enter your name and roll number first.","error");
-    return;
-  }
-  if(!/^[6-9]\d{9}$/.test(mobile)){
-    setLoginMessage("Enter a valid 10-digit mobile number.","error");
     return;
   }
 
   const button=document.querySelector("#studentForm .login-primary");
   button.disabled=true;
   resendButton.disabled=true;
-  setLoginMessage("Sending the OTP to your mobile number...","");
+  setLoginMessage("Sending your name, roll number and OTP to your Gmail...","");
 
   try{
     const response=await fetch("/api/send-otp",{
       method:"POST",
       headers:{"Content-Type":"application/json"},
       credentials:"same-origin",
-      body:JSON.stringify({name,rollNumber:roll,mobile})
+      body:JSON.stringify({name,rollNumber:roll})
     });
     const result=await response.json().catch(()=>({}));
     if(!response.ok) throw new Error(result.error || "Could not send OTP.");
@@ -74,10 +68,10 @@ async function requestOtp(){
     otpPanel.hidden=false;
     otpInput.value="";
     startOtpTimer(result.expiresIn || 60);
-    setLoginMessage(result.message || "OTP sent to your mobile number.","success");
+    setLoginMessage(result.message || "Name, roll number and OTP sent to your Gmail.","success");
     otpInput.focus();
   }catch(error){
-    setLoginMessage(error.message || "Could not send OTP. Check the server and SMS settings.","error");
+    setLoginMessage(error.message || "Could not send OTP. Check the server and Resend settings.","error");
   }finally{
     button.disabled=false;
     setTimeout(()=>{resendButton.disabled=false;},30000);
@@ -91,7 +85,7 @@ async function verifyOtpWithServer(){
   }
   const otp=otpInput.value.trim();
   if(!/^\d{6}$/.test(otp)){
-    setLoginMessage("Enter the 6-digit OTP from the SMS.","error");
+    setLoginMessage("Enter the 6-digit OTP from your email.","error");
     return;
   }
   if(Date.now()>otpExpiresAt){
@@ -162,9 +156,6 @@ studentForm.addEventListener("submit",e=>{
 });
 verifyButton.onclick=verifyOtpWithServer;
 resendButton.onclick=requestOtp;
-mobileInput.addEventListener("input",()=>{
-  mobileInput.value=mobileInput.value.replace(/\D/g,"").slice(0,10);
-});
 otpInput.addEventListener("input",()=>{
   otpInput.value=otpInput.value.replace(/\D/g,"").slice(0,6);
 });
