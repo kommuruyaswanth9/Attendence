@@ -1,4 +1,8 @@
 // ---------------- SECURE LOGIN / REAL EMAIL OTP ----------------
+// GitHub Pages only hosts static files (no server, so no email OTP).
+// On *.github.io the app uses a simple local sign-in instead; on a Node host (Render etc.) it uses the OTP.
+const STATIC_MODE = location.hostname.endsWith("github.io");
+const LOCAL_USER_KEY = "attendanceLocalUser";
 const OTP_TTL = 60 * 1000;
 let challengeId = "";
 let otpExpiresAt = 0;
@@ -146,12 +150,14 @@ async function restoreServerSession(){
 }
 
 document.getElementById("logoutBtn").onclick=async()=>{
-  try{await fetch("/api/logout",{method:"POST",credentials:"same-origin"});}catch(e){}
+  if(STATIC_MODE){ try{localStorage.removeItem(LOCAL_USER_KEY);}catch(e){} }
+  else { try{await fetch("/api/logout",{method:"POST",credentials:"same-origin"});}catch(e){} }
   location.reload();
 };
 
 studentForm.addEventListener("submit",e=>{
   e.preventDefault();
+  if(STATIC_MODE){ localLogin(); return; }
   requestOtp();
 });
 verifyButton.onclick=verifyOtpWithServer;
@@ -163,7 +169,36 @@ otpInput.addEventListener("keydown",e=>{
   if(e.key==="Enter") verifyOtpWithServer();
 });
 
+function localLogin(){
+  const name=studentNameInput.value.trim();
+  const roll=rollNumberInput.value.trim();
+  if(name.length<2 || !roll){
+    otpPanel.hidden=false;
+    document.querySelector(".otp-heading").hidden=true;
+    document.querySelector("#otpPanel > p").hidden=true;
+    otpInput.hidden=verifyButton.hidden=resendButton.hidden=true;
+    setLoginMessage("Enter a valid name and roll number.","error");
+    return;
+  }
+  try{localStorage.setItem(LOCAL_USER_KEY,JSON.stringify({name,rollNumber:roll}));}catch(e){}
+  showLoggedInUser(name,roll);
+}
+
+function restoreLocalSession(){
+  try{
+    const u=JSON.parse(localStorage.getItem(LOCAL_USER_KEY)||"null");
+    if(u && u.name && u.rollNumber){ showLoggedInUser(u.name,u.rollNumber); return true; }
+  }catch(e){}
+  return false;
+}
+
 (async()=>{
+  if(STATIC_MODE){
+    document.querySelector("#studentForm .login-primary").textContent="Continue";
+    document.querySelector(".login-note").textContent="Your attendance is saved in this browser only.";
+    if(!restoreLocalSession()) attendanceApp.hidden=true;
+    return;
+  }
   const loggedIn=await restoreServerSession();
   if(!loggedIn) attendanceApp.hidden=true;
 })();
