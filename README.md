@@ -1,4 +1,4 @@
-# Attendance Tracker — SMS OTP Login
+# Attendance Tracker — Resend OTP Login
 
 This version keeps the existing attendance tracker and adds a server-side OTP login.
 
@@ -48,12 +48,3 @@ This version keeps the existing attendance tracker and adds a server-side OTP lo
 The attendance records remain in browser `localStorage`, just as in the original tracker. The OTP protects access to the web interface, but it does not turn localStorage into a server-side multi-user database.
 
 For a production multi-user system, move attendance records to a database and associate them with the authenticated user.
-
-## SMS OTP + Gmail notification (new)
-
-- The student enters name, roll number and **mobile number**. The OTP is sent **by SMS to that number** (Twilio).
-- After the OTP is verified, an email "New Attendance Registration" (name, roll number, mobile, time in IST) is sent to `OTP_EMAIL` through Resend.
-- The OTP is no longer emailed to anyone.
-- SMS is limited to 1 per 30 s and 5 per hour per mobile number, plus the existing per-IP cooldown.
-- Set `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` and `TWILIO_FROM` (or `TWILIO_MESSAGING_SERVICE_SID`) in `.env` / Render environment variables.
-- Twilio trial accounts can only text numbers you have verified in the Twilio console. Upgrade the account to text any student.
